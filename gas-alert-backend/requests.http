@@ -1,0 +1,8 @@
+### Teste de Alerta
+POST http://localhost:3000/alert
+Content-Type: application/json
+
+{
+  "sensorOwner": "Lavinia",
+  "gasLevel": 75
+}
