@@ -1,0 +1,16 @@
+modules = ["nodejs-20", "cpp-clang14"]
+run = "node gas-alert-backend/index.js"
+
+[nix]
+channel = "stable-24_05"
+
+[deployment]
+run = ["sh", "-c", "node gas-alert-backend/index.js"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80
+
+[[ports]]
+localPort = 5000
+externalPort = 5000

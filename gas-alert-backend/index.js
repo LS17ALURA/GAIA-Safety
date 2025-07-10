@@ -1,16 +1,17 @@
-import 'dotenv/config';
-import express from 'express';
-import TelegramBot from 'node-telegram-bot-api';
-import mysql from 'mysql2/promise';
+import "dotenv/config";
+import express from "express";
+import TelegramBot from "node-telegram-bot-api";
+import mysql from "mysql2/promise";
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-const botToken = '7977541204:AAGqBKBRvsaHA5L5NnD_9IN-YU4MOr_-qlc';
-const bot = new TelegramBot(botToken, { polling: true });
+const token = process.env.BOT_TOKEN;
 
-bot.on('message', (msg) => {
-  console.log('Chat ID:', msg.chat.id, ' - Mensagem:', msg.text);
+const bot = new TelegramBot(token, { polling: true, dropPendingUpdates: true });
+
+bot.on("message", (msg) => {
+  console.log("Chat ID:", msg.chat.id, " - Mensagem:", msg.text);
 });
 
 app.use(express.json());
@@ -18,110 +19,157 @@ app.use(express.json());
 let db;
 
 (async () => {
-  db = await mysql.createConnection({
-    host: process.env.DB_HOST,
-    port: process.env.DB_PORT,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-  });
+  try {
+    db = await mysql.createConnection({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+    });
 
-  // Cria tabelas se não existirem
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      ownerName VARCHAR(255) NOT NULL,
-      chatId VARCHAR(255) NOT NULL UNIQUE
-    );
-  `);
+    // Cria tabelas se não existirem
+    await db.execute(`
+          CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            ownerName VARCHAR(255) NOT NULL,
+            chatId VARCHAR(255) NOT NULL UNIQUE
+          );
+        `);
 
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS contacts (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      userChatId VARCHAR(255) NOT NULL,
-      contactChatId VARCHAR(255) NOT NULL,
-      FOREIGN KEY (userChatId) REFERENCES users(chatId)
-    );
-  `);
+    await db.execute(`
+          CREATE TABLE IF NOT EXISTS sensors (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            chatId VARCHAR(255) NOT NULL,
+            name VARCHAR(50) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            UNIQUE(chatId, name),
+            FOREIGN KEY(chatId) REFERENCES users(chatId)
+          );
+        `);
+
+    await db.execute(`
+          CREATE TABLE IF NOT EXISTS contacts (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            userChatId VARCHAR(255) NOT NULL,
+            contactChatId VARCHAR(255) NOT NULL,
+            FOREIGN KEY (userChatId) REFERENCES users(chatId)
+          );
+        `);
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("Erro ao conectar no banco:", error);
+    process.exit(1);
+  }
 })();
 
-// Comando /start
+// Telegram Bot Commands
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(msg.chat.id,
-    `Bem-vindo! Para registrar, use:\n/register NomeSensor`);
+  bot.sendMessage(
+    msg.chat.id,
+    `Bem-vindo! Para registrar um sensor, use:\n/register Nome Tipo\nExemplo: /register Cozinha gas`,
+  );
 });
 
-// Comando /register NomeSensor
-bot.onText(/\/register (.+)/, async (msg, match) => {
+bot.onText(/\/register (\w+)\s+(\w+)/, async (msg, match) => {
   const chatId = msg.chat.id.toString();
-  const ownerName = match[1].trim();
-  if (!ownerName) {
-    await bot.sendMessage(chatId, 'Use: /register NomeSensor');
-    return;
+  const name = match[1].trim();
+  const type = match[2].trim().toLowerCase();
+
+  const tiposValidos = ["gas", "fumaça", "incendio"];
+  if (!tiposValidos.includes(type)) {
+    return bot.sendMessage(
+      chatId,
+      "Tipo inválido. Use: gas, fumaça ou incendio.",
+    );
   }
+
   try {
     await db.execute(
-      `INSERT INTO users (ownerName, chatId) VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE ownerName = VALUES(ownerName);`,
-      [ownerName, chatId]
+      `INSERT INTO sensors (chatId, name, type) VALUES (?, ?, ?)`,
+      [chatId, name, type],
     );
-    await bot.sendMessage(chatId, `Registrado! Sensor: ${ownerName}`);
-  } catch (error) {
-    console.error('Erro ao registrar usuário:', error);
-    await bot.sendMessage(chatId, 'Erro ao registrar. Tente novamente.');
+    await bot.sendMessage(
+      chatId,
+      `Sensor '${name}' (${type}) registrado com sucesso.`,
+    );
+  } catch (err) {
+    if (err.code === "ER_DUP_ENTRY") {
+      await bot.sendMessage(
+        chatId,
+        `Você já tem um sensor com o nome '${name}'. Use um nome diferente.`,
+      );
+    } else {
+      console.error(err);
+      await bot.sendMessage(chatId, "Erro ao registrar sensor.");
+    }
   }
 });
 
-// Comando /addcontact ChatID
 bot.onText(/\/addcontact (.+)/, async (msg, match) => {
   const userChatId = msg.chat.id.toString();
   const contactId = match[1].trim();
   try {
     await db.execute(
-      `INSERT INTO contacts (userChatId, contactChatId) VALUES (?, ?);`,
-      [userChatId, contactId]
+      `INSERT INTO contacts (userChatId, contactChatId) VALUES (?, ?)`,
+      [userChatId, contactId],
     );
     await bot.sendMessage(userChatId, `Contato ${contactId} adicionado!`);
   } catch (error) {
-    console.error('Erro ao adicionar contato:', error);
-    await bot.sendMessage(userChatId, 'Erro ao adicionar contato. Tente novamente.');
+    console.error("Erro ao adicionar contato:", error);
+    await bot.sendMessage(
+      userChatId,
+      "Erro ao adicionar contato. Tente novamente.",
+    );
   }
 });
 
-// Endpoint POST /alert para ESP
-app.post('/alert', async (req, res) => {
-  const { sensorOwner, gasLevel } = req.body;
-  if (typeof sensorOwner !== 'string' || typeof gasLevel !== 'number') {
-    return res.status(400).json({ error: 'Dados insuficientes' });
+app.post("/alert", async (req, res) => {
+  const { sensorOwner, sensorName, type, value } = req.body;
+  if (
+    typeof sensorOwner !== "string" ||
+    typeof sensorName !== "string" ||
+    typeof type !== "string" ||
+    typeof value !== "number"
+  ) {
+    return res.status(400).json({ error: "Dados insuficientes ou inválidos" });
   }
+
   try {
-    const [rows] = await db.execute(`SELECT chatId FROM users WHERE ownerName = ?`, [sensorOwner]);
-    const user = rows[0];
-    if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+    // Busca sensor pelo chatId do dono, nome e tipo
+    const [sensors] = await db.execute(
+      `SELECT s.chatId FROM sensors s JOIN users u ON s.chatId = u.chatId WHERE u.ownerName = ? AND s.name = ? AND s.type = ?`,
+      [sensorOwner, sensorName, type],
+    );
+    if (sensors.length === 0) {
+      return res.status(404).json({ error: "Sensor não encontrado" });
+    }
+    const userChatId = sensors[0].chatId;
 
-    const [contacts] = await db.execute(`SELECT contactChatId FROM contacts WHERE userChatId = ?`, [user.chatId]);
-    const allChats = [user.chatId, ...contacts.map(c => c.contactChatId)];
+    // Busca contatos
+    const [contacts] = await db.execute(
+      `SELECT contactChatId FROM contacts WHERE userChatId = ?`,
+      [userChatId],
+    );
+    const allChats = [userChatId, ...contacts.map((c) => c.contactChatId)];
 
-    console.log(`⭐ Enviando alerta para:`, allChats);
+    // Envia mensagem para todos
+    const msg = `🚨 *Alerta de ${type}*\nSensor: ${sensorName}\nValor: ${value}`;
     for (const chatId of allChats) {
-      const msg = `🚨 *Alerta de Gás*\nSensor: ${sensorOwner}\nValor: ${gasLevel}%`;
       try {
-        await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+        await bot.sendMessage(chatId, msg, { parse_mode: "Markdown" });
         console.log(`✔ Enviado para ${chatId}`);
       } catch (err) {
         console.error(`✖ Falha em ${chatId}:`, err.message);
       }
     }
 
-    res.json({ message: 'Alerta enviado', notified: allChats });
+    res.json({ message: "Alerta enviado", notified: allChats });
   } catch (error) {
-    console.error('Erro no endpoint /alert:', error);
-    res.status(500).json({ error: 'Erro interno do servidor' });
+    console.error("Erro no endpoint /alert:", error);
+    res.status(500).json({ error: "Erro interno do servidor" });
   }
 });
-
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
-// This code sets up an Express server with a Telegram bot that allows users to register sensors, add emergency contacts, and receive gas level alerts.
-// It uses a MySQL database to store user and contact information, and provides an endpoint for ESP devices to send gas level alerts.
-// The bot responds to commands like /start, /register, and /addcontact, and sends alerts to registered users and their contacts when gas levels are reported.
-// Make sure to set up your .env file with the correct database credentials before running the server
